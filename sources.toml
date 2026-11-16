@@ -1,0 +1,40 @@
+# One entry per directory in corpus/raw/, keyed by the directory name.
+#
+# Required: licence and attribution. They are declared here, not read from the
+# repo, because a LICENSE file often covers the code rather than the content
+# (dora.dev's is Apache 2.0, cd-manifesto's is MIT; both sites are CC BY 4.0).
+#
+# A source can be a git clone or a plain folder of .md and .txt files.
+#
+# Optional: include and exclude (globs relative to the content folder),
+# content (the content folder, if the guess is wrong), base_url (the published
+# site, if the Hugo config does not say) and url (one link for every page in a
+# plain folder). A clone without a base_url links each page to its file on
+# GitHub at the indexed commit.
+
+["dora.dev"]
+licence = "CC BY 4.0"
+attribution = "DORA, Google LLC, dora.dev"
+include = ["capabilities/*/index.md"]
+
+["cd-manifesto"]
+# minimumcd.org is now just the manifesto. The practice pages are in cd-migration.
+licence = "CC BY 4.0"
+attribution = "MinimumCD Authors, minimumcd.org"
+include = ["_index.md"]
+
+["cd-migration"]
+licence = "CC BY 4.0"
+attribution = "CD Migration Authors, beyond.minimumcd.org (adapted from MinimumCD.org and the Dojo Consortium)"
+
+["twelve-factor"]
+# The updated manifesto is not published as a site yet.
+licence = "CC BY 4.0"
+attribution = "Twelve-Factor App authors, github.com/twelve-factor/twelve-factor"
+content = "content"
+exclude = ["toc.md"]
+
+["mainline"]
+# Plain folder.
+licence = "All rights reserved"
+attribution = "Nat Young"
