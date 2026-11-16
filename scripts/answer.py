@@ -29,17 +29,30 @@ RULES_V1 = [
     f"If the passages do not answer the question, reply exactly: {verify.NOT_IN_SOURCES}",
     "When passages disagree, say so and name each source.",
 ]
-# Each version of the prompt's rules, kept unchanged once used, so saved answers can be compared.
+RULES_V3 = [
+    "Answer only from the passages. Use nothing you know from anywhere else.",
+    'Each quote is one exact sentence copied from a passage, and "passage" is that passage\'s number, such as "c3".',
+    '"summary" is optional: at most one sentence in your own words.',
+    '"disagreement" is optional: which sources disagree, and on what.',
+    'If the passages do not answer the question, reply exactly: {"quotes": []}',
+]
+INTRO = "You answer questions using only the numbered passages you are given."
+JSON_FORM = ('Reply with JSON only, in this form:\n'
+             '{"quotes": [{"quote": "...", "passage": "c3"}], "summary": "...", "disagreement": "..."}')
+
+# Each version of the prompt, kept unchanged once used, so saved answers can be compared.
+# v3 is structured: the model replies with JSON, and verify.py renders the answer.
 RULES = {
     "v1": RULES_V1,
     "v2": RULES_V1 + ["Every sentence must contain a quote, except one sentence naming the sources when they disagree."],
+    "v3": RULES_V3,
 }
 DEFAULT_PROMPT = "v1"
 
 
 def system(version):
-    return ("You answer questions using only the numbered passages you are given.\n\nRules:\n"
-            + "\n".join(f"- {rule}" for rule in RULES[version]))
+    form = f"{JSON_FORM}\n\n" if version in verify.STRUCTURED else ""
+    return f"{INTRO}\n\n{form}Rules:\n" + "\n".join(f"- {rule}" for rule in RULES[version])
 
 
 def prompt(question, passages):

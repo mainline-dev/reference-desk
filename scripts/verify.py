@@ -14,8 +14,15 @@ part of the answer gets one of three outcomes:
   flagged    a quote not in its passage or without a passage number, and the
              model's words in a sentence with no checked quote
 
+With prompt v3 the reply is JSON: quotes, each with its passage, and an
+optional summary and disagreement in the model's own words. Each quote is
+checked the same way, and the answer is rendered from the result: checked
+quotes with their source's title and URL, failed quotes marked flagged, and the
+summary and disagreement labelled as the model's wording. An empty quotes list
+means "Not in the sources.".
+
 Quote coverage is the share of the answer's words that are inside checked
-quotes. The outcome counts, the coverage and every quote (with, when checked,
+quotes (for v3, of the rendered answer's quotes, summary and disagreement). The outcome counts, the coverage and every quote (with, when checked,
 its chunk and the exact slice of the chunk's text it matched) are saved in the
 answer file.
 
@@ -130,6 +137,30 @@ def sentences(answer):
     return found
 
 
+STRUCTURED = {"v3"}  # prompt versions whose reply is JSON: quotes, summary, disagreement
+
+
+def parse_structured(answer):
+    """(quotes, summary, disagreement) from a structured reply, or None if it is not
+    that JSON. quotes is [(quote, passage number or None)]; the others are "" if absent."""
+    text = answer.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, re.S)  # a model may fence its JSON
+    try:
+        data = json.loads(fenced.group(1) if fenced else text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("quotes", []), list):
+        return None
+    quotes = []
+    for item in data.get("quotes") or []:
+        if not isinstance(item, dict) or not isinstance(item.get("quote"), str):
+            return None
+        number = re.fullmatch(r"\[?c?(\d+)\]?", str(item.get("passage", "")).strip())
+        quotes.append((item["quote"], int(number.group(1)) if number else None))
+    text_of = lambda key: data[key].strip() if isinstance(data.get(key), str) else ""
+    return quotes, text_of("summary"), text_of("disagreement")
+
+
 def find(quote, n, ids, chunks):
     """(the quote's chunk or None, the (start, end) of its slice of the chunk's text
     or None, and why it does not check, or None if it does)."""
@@ -157,48 +188,95 @@ def verify(path):
     chunks = {c["id"]: c for c in map(json.loads, raw.decode("utf-8").splitlines())}
     units = {u["id"]: u for u in map(json.loads, UNITS.read_text(encoding="utf-8").splitlines())}
     ids, answer = record["chunks"], record["answer"]
-    counts, covered, saved = {"checked": 0, "unchecked": 0, "flagged": 0}, 0, []
+    counts, saved, covered = {"checked": 0, "unchecked": 0, "flagged": 0}, [], [0]
+
+    def source(chunk):
+        unit = units.get(chunk["unit_id"], {})
+        return unit, unit.get("title", chunk["heading_path"][0]), unit.get("url") or unit.get("path", chunk["unit_id"])
+
+    def quote_outcome(quote, n, result):
+        """Print and record one quote, given find()'s result. Returns its chunk and
+        why it failed, or None."""
+        chunk, span, problem = result
+        cite = f" [c{n}]" if n else ""
+        if problem:
+            counts["flagged"] += 1
+            saved.append({"quote": quote, "passage": n, "outcome": "flagged", "why": problem})
+            print(f'flagged    "{quote}"{cite}\n           {problem}')
+            return chunk, problem
+        counts["checked"] += 1
+        covered[0] += len(words(quote))
+        # The exact slice of the chunk's text, and of its unit's (chunk start + offset).
+        saved.append({"quote": quote, "passage": n, "outcome": "checked", "chunk": chunk["id"],
+                      "start": span[0], "end": span[1],
+                      "unit_start": chunk["start"] + span[0], "unit_end": chunk["start"] + span[1]})
+        unit, title, url = source(chunk)
+        print(f'checked    "{quote}"{cite}\n           {title}, {url}\n'
+              f"           {unit.get('licence', '?')}. {unit.get('attribution', '?')}\n"
+              f"           {chunk['id']} text[{span[0]}:{span[1]}]")
+        return chunk, None
+
+    def wording_outcome(text, supported, why, label="model's wording, not from a source"):
+        """The model's own words: unchecked beside a checked quote, flagged without one."""
+        if supported:
+            counts["unchecked"] += 1
+            print(f"{DIM}unchecked  {text}\n           {label}{PLAIN}")
+        else:
+            counts["flagged"] += 1
+            print(f"flagged    {text}\n           {why}")
 
     print(f"Verifying {path}")
-    if flat(answer) == NOT_IN_SOURCES:
+    structured = record.get("prompt_version") in STRUCTURED
+    parsed = parse_structured(answer) if structured else None
+    rendered, total = None, 0
+    if flat(answer) == NOT_IN_SOURCES or (parsed and not any(parsed)):
         print(f'No claims: the answer is "{NOT_IN_SOURCES}"')
-        coverage = None
+        coverage, rendered = None, NOT_IN_SOURCES if structured else None
+    elif structured and parsed is None:
+        counts["flagged"] += 1
+        print(f"flagged    the reply is not the JSON prompt {record['prompt_version']} asks for")
+        coverage, rendered = 0.0, answer
+    elif structured:
+        # Prompt v3: verify each quote, then render the answer from what checked.
+        quotes, summary, disagreement = parsed
+        lines, content = [], []
+        for quote, n in quotes:
+            chunk, problem = quote_outcome(quote, n, find(quote, n, ids, chunks))
+            cite = f" [c{n}]" if n else ""
+            if problem:
+                lines.append(f'Flagged ({problem}): "{quote}"{cite}')
+            else:
+                lines.append(f'"{quote}"{cite}\n  {source(chunk)[1]}, {source(chunk)[2]}')
+            content.append(quote)
+        supported = counts["checked"] > 0
+        for name, text in (("summary", summary), ("disagreement", disagreement)):
+            if text:
+                wording_outcome(text, supported, f"a {name} with no checked quote", f"{name}, model's wording")
+                lines.append(f"{name.capitalize()}, model's wording: {text}")
+                content.append(text)
+        rendered = "\n\n".join(lines)
+        # Coverage of the rendered answer's content: its quotes and the model's lines,
+        # not the source titles and URLs the renderer adds.
+        total = len(words(" ".join(content)))
+        coverage = round(covered[0] / total, 3) if total else None
+        print(f"\nRendered answer:\n\n{rendered}")
     else:
         for quotes, wording in sentences(answer):
             found = [find(quote, n, ids, chunks) for quote, n in quotes]
             if wording:
-                if any(problem is None for *_, problem in found):
-                    counts["unchecked"] += 1
-                    print(f"{DIM}unchecked  {wording}\n           model's wording, not from a source{PLAIN}")
-                else:
-                    counts["flagged"] += 1
-                    reason = "the sentence quotes nothing" if not quotes else "its quote does not check"
-                    print(f"flagged    {wording}\n           {reason}")
-            for (quote, n), (chunk, span, problem) in zip(quotes, found):
-                cite = f" [c{n}]" if n else ""
-                if problem:
-                    counts["flagged"] += 1
-                    saved.append({"quote": quote, "passage": n, "outcome": "flagged", "why": problem})
-                    print(f'flagged    "{quote}"{cite}\n           {problem}')
-                    continue
-                counts["checked"] += 1
-                covered += len(words(quote))
-                # The exact slice of the chunk's text, and of its unit's (chunk start + offset).
-                saved.append({"quote": quote, "passage": n, "outcome": "checked", "chunk": chunk["id"],
-                              "start": span[0], "end": span[1],
-                              "unit_start": chunk["start"] + span[0], "unit_end": chunk["start"] + span[1]})
-                unit = units.get(chunk["unit_id"], {})
-                print(f'checked    "{quote}"{cite}\n'
-                      f"           {unit.get('title', chunk['heading_path'][0])}, "
-                      f"{unit.get('url') or unit.get('path', chunk['unit_id'])}\n"
-                      f"           {unit.get('licence', '?')}. {unit.get('attribution', '?')}\n"
-                      f"           {chunk['id']} text[{span[0]}:{span[1]}]")
+                why = "the sentence quotes nothing" if not quotes else "its quote does not check"
+                wording_outcome(wording, any(problem is None for *_, problem in found), why)
+            for (quote, n), result in zip(quotes, found):
+                quote_outcome(quote, n, result)
         total = len(words(answer))
-        coverage = round(covered / total, 3) if total else None
+        coverage = round(covered[0] / total, 3) if total else None
+    if coverage is not None:
         print(f"\n{counts['checked']} checked, {counts['unchecked']} unchecked, {counts['flagged']} flagged. "
-              f"Quote coverage {coverage:.0%} ({covered} of {total} words in checked quotes)")
+              f"Quote coverage {coverage:.0%} ({covered[0]} of {total} words in checked quotes)")
 
     record["claims"], record["quote_coverage"], record["quotes"] = counts, coverage, saved
+    if rendered is not None:
+        record["rendered"] = rendered
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return 1 if counts["flagged"] else 0
 

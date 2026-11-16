@@ -85,6 +85,29 @@ class Links(unittest.TestCase):
         self.assertEqual((start, end), (5, 18))
 
 
+class Structured(unittest.TestCase):
+    def test_quotes_summary_and_disagreement(self):
+        reply = ('{"quotes": [{"quote": "Work integrates daily.", "passage": "c3"}], '
+                 '"summary": "Integrate daily.", "disagreement": "c2 and c5 differ on hours."}')
+        self.assertEqual(verifier.parse_structured(reply),
+                         ([("Work integrates daily.", 3)], "Integrate daily.", "c2 and c5 differ on hours."))
+
+    def test_fenced_json_and_other_ways_of_writing_the_passage(self):
+        reply = '```json\n{"quotes": [{"quote": "A.", "passage": "[c1]"}, {"quote": "B.", "passage": "4"}]}\n```'
+        self.assertEqual(verifier.parse_structured(reply), ([("A.", 1), ("B.", 4)], "", ""))
+
+    def test_a_quote_without_a_usable_passage_has_none(self):
+        self.assertEqual(verifier.parse_structured('{"quotes": [{"quote": "A.", "passage": "the first"}]}'),
+                         ([("A.", None)], "", ""))
+
+    def test_an_empty_quotes_list_is_not_in_the_sources(self):
+        self.assertFalse(any(verifier.parse_structured('{"quotes": []}')))
+
+    def test_anything_else_is_not_structured(self):
+        for reply in ('Not JSON at all', '["a list"]', '{"quotes": "one"}', '{"quotes": [{"text": "A."}]}'):
+            self.assertIsNone(verifier.parse_structured(reply), reply)
+
+
 class Coverage(unittest.TestCase):
     def test_words_leave_out_citations_and_list_markers(self):
         answer = '1. It says: "Work integrates to trunk daily." [c2]'
