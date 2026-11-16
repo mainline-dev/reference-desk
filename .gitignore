@@ -9,3 +9,6 @@ corpus/
 
 # Virtual environments
 .venv
+
+# Secrets: the model's API key and settings
+.env
