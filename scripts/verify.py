@@ -6,8 +6,9 @@ passage number, like "Work integrates to trunk at least daily." [c2]. Every
 part of the answer gets one of three outcomes:
 
   checked    a quote found in its passage's text (not embed_text), ignoring
-             white space and link markup, nothing else: the model sees each
-             [words](url) as its words, so that is what a quote is matched to
+             white space, link markup and the case of its first letter,
+             nothing else: the model sees each [words](url) as its words, so
+             that is what a quote is matched to
   unchecked  the model's own words in a sentence that also has a checked quote:
              shown dimmed, as the model's wording, not from a source
   flagged    a quote not in its passage or without a passage number, and the
@@ -67,9 +68,12 @@ def reduce_links(text):
 
 
 def locate(quote, text):
-    """The (start, end) slice of text that a quote matches, ignoring white space
-    and link markup and nothing else, or None. A quote that starts or ends inside
-    a link takes the whole link, so the slice never cuts through its markup."""
+    """The (start, end) slice of text that a quote matches, or None.
+
+    Ignores white space, link markup and the case of the quote's first letter
+    (a sentence quoted from mid-sentence starts with a capital), and nothing
+    else. A quote that starts or ends inside a link takes the whole link, so
+    the slice never cuts through its markup."""
     target = flat(quote)
     if not target:
         return None
@@ -82,7 +86,10 @@ def locate(quote, text):
         else:
             squeezed.append(match.group())
             at += range(match.start(), match.end())
-    k = "".join(squeezed).find(target)
+    squeezed = "".join(squeezed)
+    k = squeezed.find(target)
+    if k < 0 and target[0].isalpha():
+        k = squeezed.find(target[0].swapcase() + target[1:])
     if k < 0:
         return None
     start, end = where[at[k]], where[at[k + len(target) - 1]] + 1

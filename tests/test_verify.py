@@ -72,6 +72,14 @@ class Links(unittest.TestCase):
         self.assertIsNone(verifier.locate("A 2015 State of DevOps Report (PDF) shows", self.TEXT))
         self.assertIsNone(verifier.locate("https://dora.dev/research/2015/report.pdf", self.TEXT))
 
+    def test_the_first_letter_may_differ_in_case_and_nothing_else(self):
+        quote = "Teams perform better when developers merge their work into trunk at least daily."
+        start, end = verifier.locate(quote, self.TEXT)
+        self.assertEqual(self.TEXT[start:end], self.TEXT[self.TEXT.index("teams perform"):])
+        self.assertIsNone(verifier.locate("TEams perform better", self.TEXT))
+        self.assertIsNone(verifier.locate("teams Perform better", self.TEXT))
+        self.assertIsNone(verifier.locate("The 2015 state of DevOps Report", self.TEXT))
+
     def test_text_without_links_matches_ignoring_white_space(self):
         start, end = verifier.locate("one  two\nthree", "zero one two three four")
         self.assertEqual((start, end), (5, 18))
