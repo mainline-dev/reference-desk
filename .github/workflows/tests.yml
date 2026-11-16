@@ -1,0 +1,16 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # The tests use only the standard library: no corpus, no model, no network
+      # beyond fetching Python itself, so the project's dependencies are not installed.
+      - name: Run the tests
+        run: uv run --no-project --python 3.14 python -m unittest discover -s tests -v
