@@ -41,6 +41,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import tomllib
 from collections import Counter
 from pathlib import Path
@@ -64,6 +65,12 @@ RISK = re.compile(r"\{\{[<%]\s*risk-indicator\s+level=\"(\w+)\"\s*[>%]\}\}")
 SCOPE = re.compile(r"\{\{[<%]\s*scope-label\s+\"([\w-]+)\"\s*[>%]\}\}")
 CARD_HEADER = re.compile(r"\{\{[<%]\s*card\b[^}]*?header=\"([^\"]*)\"[^}]*[>%]\}\}")
 ANY_SHORTCODE = re.compile(r"\{\{[<%].*?[>%]\}\}", re.S)
+CODE_SHORTCODE = re.compile(
+    r"^([ \t]*)\{\{[<%]\s*(card|tab)\b([^}]*?)\s*[>%]\}\}[ \t]*\n?(.*?)\n?[ \t]*\{\{[<%]\s*/\2\s*[>%]\}\}",
+    re.S | re.M,
+)
+TABPANE = re.compile(r"\{\{[<%]\s*tabpane\b([^}]*?)\s*[>%]\}\}(.*?)\{\{[<%]\s*/tabpane\s*[>%]\}\}", re.S)
+ATTRIBUTE = re.compile(r"(\w+)=(?:\"([^\"]*)\"|(\S+))")
 NOT_PROSE = re.compile(r"#{1,6}\s|[-*+]\s|\d+[.)]\s|[>|<]|!\[|\{\{|(?:[-*_]\s*){3,}$")
 FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
 UNDERLINE = re.compile(r" {0,3}(=+|-+)[ \t]*")
@@ -176,7 +183,40 @@ def atx_headings(body):
     return "\n".join(out)
 
 
+def attributes(text):
+    return {m.group(1): m.group(3) if m.group(2) is None else m.group(2) for m in ATTRIBUTE.finditer(text)}
+
+
+def code_shortcodes(body):
+    """Docsy shortcodes that show code, as the header in bold and a fenced block.
+
+    Docsy highlights a card with code=true, and a tab unless it or its tabpane
+    says text=true, as code in its lang (a tab falls back to the tabpane's).
+    Stripping them would leave the code as loose text, its comments read as
+    headings. Anything else is left for the rules below.
+    """
+    def fenced(match, pane):
+        indent, kind, own, inner = match.groups()
+        attrs = {**pane, **attributes(own)}
+        if attrs.get("text") == "true" or (kind == "card" and attrs.get("code") != "true"):
+            return match.group(0)
+        code = textwrap.dedent(inner.strip("\n")).rstrip()
+        fence = "`" * max(3, max((len(run) for run in re.findall(r"`+", code)), default=0) + 1)
+        header = re.sub(r"\A\*\*(.*)\*\*\Z", r"\1", attrs.get("header", "").strip())
+        lines = ([f"**{header}**", ""] if header else []) + [fence + attrs.get("lang", ""), *code.split("\n"), fence]
+        # Blank lines round it, so the header is never read as part of a paragraph.
+        return "\n".join([""] + [indent + line if line else line for line in lines] + [""])
+
+    def pane(match):
+        defaults = {k: v for k, v in attributes(match.group(1)).items() if k in ("lang", "text")}
+        return CODE_SHORTCODE.sub(lambda tab: fenced(tab, defaults), match.group(2))
+
+    body = TABPANE.sub(pane, body)
+    return CODE_SHORTCODE.sub(lambda m: fenced(m, {}) if m.group(2) == "card" else m.group(0), body)
+
+
 def clean(body, params, page_path, base_url, trailing_slash=True):
+    body = code_shortcodes(body)
     if base_url:
         def relref(match):
             target, _, anchor = match.group(1).partition("#")
