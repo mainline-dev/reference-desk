@@ -8,9 +8,11 @@
 #
 # Optional: include and exclude (globs relative to the content folder),
 # content (the content folder, if the guess is wrong), base_url (the published
-# site, if the Hugo config does not say) and url (one link for every page in a
-# plain folder). A clone without a base_url links each page to its file on
-# GitHub at the indexed commit.
+# site, if the Hugo config does not say), url (one link for every page in a
+# plain folder) and trailing_slash (true by default; false for a site whose
+# URLs have none, so foo/index.md is base_url/foo, not base_url/foo/). A clone
+# without a base_url links each page to its file on GitHub at the indexed
+# commit.
 
 ["dora.dev"]
 licence = "CC BY 4.0"
@@ -35,6 +37,10 @@ content = "content"
 exclude = ["toc.md"]
 
 ["mainline"]
-# Plain folder.
+# A placeholder: the docs are moving to Markdown in content/docs, and this
+# indexes nothing until that lands. index.md is https://mainline.dev/docs.
 licence = "All rights reserved"
-attribution = "Nat Young"
+attribution = "Mainline Systems, mainline.dev"
+content = "content/docs"
+base_url = "https://mainline.dev/docs"
+trailing_slash = false

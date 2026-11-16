@@ -93,12 +93,17 @@ def content_dir(folder, site_root):
 
 # --- cleaning --------------------------------------------------------------
 
-def url_path(rel):
-    """content-relative file path -> site path, Hugo style."""
+def url_path(rel, trailing_slash=True):
+    """content-relative file path -> site path, Hugo style.
+
+    Without a trailing slash, an index is at its folder's path with none either,
+    so the top index.md is "" (base_url itself).
+    """
     path = re.sub(r"\.(md|txt)$", "", rel)
     if path.endswith("_index") or path.endswith("/index") or path == "index":
         path = posixpath.dirname(path)
-    return "/" + path.strip("/") + "/" if path.strip("/") else "/"
+    path = "/" + path.strip("/") + "/" if path.strip("/") else "/"
+    return path if trailing_slash else path.rstrip("/")
 
 
 def front_value(front, key):
@@ -111,13 +116,14 @@ def first_heading(body):
     return match.group(1) if match else ""
 
 
-def clean(body, front, page_path, base_url):
+def clean(body, front, page_path, base_url, trailing_slash=True):
     if base_url:
         def relref(match):
             target, _, anchor = match.group(1).partition("#")
             if not target.startswith("/"):
                 target = posixpath.normpath(posixpath.join(page_path, "..", target))
-            return base_url + url_path(target.lstrip("/")) + ("#" + anchor if anchor else "")
+            path = url_path(target.lstrip("/"), trailing_slash)
+            return base_url + path + ("#" + anchor if anchor else "")
 
         body = RELREF.sub(relref, body)
         body = re.sub(r"\]\(/", f"]({base_url}/", body)  # site-relative links -> absolute
@@ -145,6 +151,7 @@ def normalise(folder, entry):
     repo, commit = git_info(folder)
     site_root, base_url = hugo_site(folder)
     base_url = entry.get("base_url", base_url)
+    trailing_slash = entry.get("trailing_slash", True)
     root = folder / entry["content"] if "content" in entry else content_dir(folder, site_root)
     content_rel = root.relative_to(folder).as_posix().strip(".")
     blob = f"{repo}/blob/{commit}/{content_rel}".rstrip("/") if repo and commit else None
@@ -165,9 +172,9 @@ def normalise(folder, entry):
         if re.search(r"^draft:\s*true", front, re.M):
             continue
 
-        path = url_path(rel)
+        path = url_path(rel)  # with the slash: names the output file, resolves relrefs
         if base_url:
-            page_url = base_url + path
+            page_url = base_url + url_path(rel, trailing_slash)
         elif blob:
             page_url = f"{blob}/{rel}"
             body = re.sub(r"\]\(\./([\w/-]+\.md)", lambda m: f"]({blob}/{m.group(1)}", body)
@@ -192,7 +199,7 @@ def normalise(folder, entry):
 
         out = OUT / name / f"{path.strip('/') or 'index'}.md"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(f"---\n{front}\n---\n\n{clean(body, front, path, base_url)}", encoding="utf-8")
+        out.write_text(f"---\n{front}\n---\n\n{clean(body, front, path, base_url, trailing_slash)}", encoding="utf-8")
         written += 1
 
     version = f"at {commit[:12]}" if commit else "(plain folder)"
