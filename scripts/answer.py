@@ -5,9 +5,10 @@ Runs the same fused search as search.py, puts the top PASSAGES of its top 20 in
 the prompt as [c1] to [c8], asks the model (scripts/llm.py, set up in .env),
 saves the answer to corpus/answers/<timestamp>.json and checks it with verify.py.
 
-Usage (from the repo root): ./scripts/answer.py "question"
-Exits 1 if any claim is flagged.
+Usage (from the repo root): ./scripts/answer.py "question" [--prompt v1|v2]
+The prompt version (default v1) is saved with the answer. Exits 1 if any claim is flagged.
 """
+import argparse
 import json
 import sys
 from datetime import datetime, timezone
@@ -20,14 +21,25 @@ import verify
 ANSWERS = Path("corpus/answers")
 PASSAGES = 8  # our own rule: passages in the prompt, of search.py's fused top 20
 
-SYSTEM = f"""You answer questions using only the numbered passages you are given.
+RULES_V1 = [
+    "Answer only from the passages. Use nothing you know from anywhere else.",
+    "Every claim quotes one exact sentence from a passage, in double quotes, followed by the passage's "
+    'number, like this: "Work integrates to trunk at least daily." [c2]',
+    "Copy each quoted sentence exactly as it is in the passage.",
+    f"If the passages do not answer the question, reply exactly: {verify.NOT_IN_SOURCES}",
+    "When passages disagree, say so and name each source.",
+]
+# Each version of the prompt's rules, kept unchanged once used, so saved answers can be compared.
+RULES = {
+    "v1": RULES_V1,
+    "v2": RULES_V1 + ["Every sentence must contain a quote, except one sentence naming the sources when they disagree."],
+}
+DEFAULT_PROMPT = "v1"
 
-Rules:
-- Answer only from the passages. Use nothing you know from anywhere else.
-- Every claim quotes one exact sentence from a passage, in double quotes, followed by the passage's number, like this: "Work integrates to trunk at least daily." [c2]
-- Copy each quoted sentence exactly as it is in the passage.
-- If the passages do not answer the question, reply exactly: {verify.NOT_IN_SOURCES}
-- When passages disagree, say so and name each source."""
+
+def system(version):
+    return ("You answer questions using only the numbered passages you are given.\n\nRules:\n"
+            + "\n".join(f"- {rule}" for rule in RULES[version]))
 
 
 def prompt(question, passages):
@@ -54,9 +66,11 @@ def save(record):
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit('Usage: ./scripts/answer.py "question"')
-    question = sys.argv[1]
+    parser = argparse.ArgumentParser(description="Answer a question from the reference desk.")
+    parser.add_argument("question")
+    parser.add_argument("--prompt", choices=sorted(RULES), default=DEFAULT_PROMPT, help="prompt version")
+    args = parser.parse_args()
+    question, version = args.question, args.prompt
     config = llm.settings()  # before the search, so a missing key stops it straight away
 
     chunks, vectors, manifest, model = search.load()
@@ -66,9 +80,10 @@ def main():
     passages = [(chunks[i], units.get(chunks[i]["unit_id"], {}).get("title", chunks[i]["heading_path"][0]))
                 for i in top]
 
-    reply, provider, reasoning = llm.chat(config, SYSTEM, prompt(question, passages))
+    reply, provider, reasoning = llm.chat(config, system(version), prompt(question, passages))
     path = save({
         "question": question,
+        "prompt_version": version,
         "model": config["model"],
         "zdr": config["zdr"],
         "provider": provider,
@@ -82,7 +97,7 @@ def main():
     print(f"Question: {question}\n")
     for n, (chunk, title) in enumerate(passages, 1):
         print(f"  [c{n}] {' > '.join(chunk['heading_path'])}")
-    print(f"\nAnswer ({config['model']}, zdr {'on' if config['zdr'] else 'off'}"
+    print(f"\nAnswer (prompt {version}, {config['model']}, zdr {'on' if config['zdr'] else 'off'}"
           f"{', served by ' + provider if provider else ''}, reasoning tokens {reasoning}):"
           f"\n\n{reply}\n\nSaved {path}\n")
     sys.exit(verify.verify(path))
