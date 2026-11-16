@@ -320,7 +320,7 @@ def normalise(folder, entry):
             page_url = entry.get("url", "")  # plain folder: only if sources.toml gives one
 
         title = text_value(meta, "title").strip()
-        title = title or first_heading(body) or page.stem.replace("-", " ").replace("_", " ")
+        title = title or first_heading(atx_headings(body)) or page.stem.replace("-", " ").replace("_", " ")
         markdown = clean(body, {**meta, "title": title}, path, base_url, trailing_slash)
         unit_id = f"{name}/{path.strip('/') or 'index'}"
 
