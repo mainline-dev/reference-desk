@@ -65,6 +65,10 @@ SCOPE = re.compile(r"\{\{[<%]\s*scope-label\s+\"([\w-]+)\"\s*[>%]\}\}")
 CARD_HEADER = re.compile(r"\{\{[<%]\s*card\b[^}]*?header=\"([^\"]*)\"[^}]*[>%]\}\}")
 ANY_SHORTCODE = re.compile(r"\{\{[<%].*?[>%]\}\}", re.S)
 NOT_PROSE = re.compile(r"#{1,6}\s|[-*+]\s|\d+[.)]\s|[>|<]|!\[|\{\{|(?:[-*_]\s*){3,}$")
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+UNDERLINE = re.compile(r" {0,3}(=+|-+)[ \t]*")
+NOT_TEXT = re.compile(r" {4}|\t| {0,3}(#{1,6}(\s|$)|[-*+]\s|\d+[.)]\s|>|\||<|(?:[-*_][ \t]*){3,}$|=+[ \t]*$)")
+ATX = re.compile(r" {0,3}#{1,6}(\s|$)")
 
 
 # --- discovery -------------------------------------------------------------
@@ -144,6 +148,34 @@ def first_heading(body):
     return match.group(1) if match else ""
 
 
+def atx_headings(body):
+    """Setext headings (paragraph text underlined with === or ---) as # and ## headings.
+
+    An underline counts only straight after paragraph text, outside code, as
+    CommonMark reads it. So a --- after a blank line, a list item, a quote or a
+    table row stays a thematic break. A heading that wraps over several lines is
+    joined into one, unless it runs on from a list item or a quote.
+    """
+    out, fence = [], None
+    for line in body.split("\n"):
+        if fence:
+            if re.match(rf" {{0,3}}{fence[0]}{{{len(fence)},}}[ \t]*$", line):
+                fence = None
+        elif FENCE.match(line):
+            fence = FENCE.match(line).group(1)
+        elif UNDERLINE.fullmatch(line):
+            start = len(out)
+            while start and out[start - 1].strip() and not NOT_TEXT.match(out[start - 1]):
+                start -= 1
+            before = out[start - 1] if start else ""
+            if start < len(out) and (not before.strip() or ATX.match(before)):
+                text = " ".join(part.strip() for part in out[start:])
+                out[start:] = [("#" if "=" in line else "##") + " " + text]
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def clean(body, params, page_path, base_url, trailing_slash=True):
     if base_url:
         def relref(match):
@@ -160,6 +192,7 @@ def clean(body, params, page_path, base_url, trailing_slash=True):
     body = SCOPE.sub(lambda m: f"Scope: {m.group(1)}.", body)
     body = CARD_HEADER.sub(lambda m: m.group(1), body)
     body = ANY_SHORTCODE.sub("", body)  # closing tags, tabs, alerts, figures: keep inner text
+    body = atx_headings(body)
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip() + "\n"
 
