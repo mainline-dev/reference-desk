@@ -31,8 +31,12 @@ Rules:
 
 
 def prompt(question, passages):
-    """The numbered passages, each with its title and heading path, then the question."""
-    parts = [f"[c{n}] {title}\nSection: {' > '.join(chunk['heading_path'])}\n\n{chunk['text'].strip()}"
+    """The numbered passages, each with its title and heading path, then the question.
+
+    Each passage is its chunk's text with links reduced to their words, the same
+    text verify.py matches quotes against, so a quote never has to carry a URL."""
+    parts = [f"[c{n}] {title}\nSection: {' > '.join(chunk['heading_path'])}\n\n"
+             f"{verify.reduce_links(chunk['text'])[0].strip()}"
              for n, (chunk, title) in enumerate(passages, 1)]
     return "Passages:\n\n" + "\n\n".join(parts) + f"\n\nQuestion: {question}"
 

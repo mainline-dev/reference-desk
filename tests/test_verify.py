@@ -47,6 +47,36 @@ class Sentences(unittest.TestCase):
         self.assertNotIn(verifier.flat("Work integrates to trunk daily."), verifier.flat(passage))
 
 
+class Links(unittest.TestCase):
+    # As in the DORA continuous integration page: a link broken over lines, then "(PDF)".
+    TEXT = ("on a regular basis. The [2015 State of DevOps\nReport](https://dora.dev/research/2015/report.pdf#page=20)\n"
+            "(PDF) shows that teams perform better when developers merge their work into\ntrunk at least daily.")
+
+    def test_links_reduce_to_their_words_and_keep_their_positions(self):
+        reduced, where, links = verifier.reduce_links(self.TEXT)
+        self.assertIn("The 2015 State of DevOps\nReport\n(PDF) shows", reduced)
+        self.assertEqual([self.TEXT[i] for i in where], list(reduced))
+        self.assertEqual(len(links), 1)
+
+    def test_a_quote_of_the_reduced_text_maps_to_its_exact_slice(self):
+        quote = "The 2015 State of DevOps Report (PDF) shows that teams perform better when developers merge their work into trunk at least daily."
+        start, end = verifier.locate(quote, self.TEXT)
+        self.assertEqual(self.TEXT[start:end], self.TEXT[self.TEXT.index("The ["):])
+
+    def test_a_quote_starting_or_ending_inside_a_link_takes_the_whole_link(self):
+        start, end = verifier.locate("2015 State of DevOps Report", self.TEXT)
+        self.assertEqual(self.TEXT[start:end], "[2015 State of DevOps\nReport](https://dora.dev/research/2015/report.pdf#page=20)")
+
+    def test_link_markup_is_the_only_thing_besides_white_space_that_is_ignored(self):
+        self.assertIsNone(verifier.locate("The 2015 State of DevOps Report shows that teams perform better", self.TEXT))
+        self.assertIsNone(verifier.locate("A 2015 State of DevOps Report (PDF) shows", self.TEXT))
+        self.assertIsNone(verifier.locate("https://dora.dev/research/2015/report.pdf", self.TEXT))
+
+    def test_text_without_links_matches_ignoring_white_space(self):
+        start, end = verifier.locate("one  two\nthree", "zero one two three four")
+        self.assertEqual((start, end), (5, 18))
+
+
 class Coverage(unittest.TestCase):
     def test_words_leave_out_citations_and_list_markers(self):
         answer = '1. It says: "Work integrates to trunk daily." [c2]'
