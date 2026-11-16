@@ -56,12 +56,20 @@ class Tables(unittest.TestCase):
             "Page\n\n| Objection | Response |\n|---|---|\n| Too big | Split it |\n| No time | Make time |",
         )
 
-    def test_a_piece_starting_inside_a_table_repeats_its_header(self):
+    def test_a_piece_starting_inside_a_table_repeats_its_header_and_separator(self):
         start = self.TEXT.index("| No time")
         header = chunker.table_header(chunker.tables(self.TEXT), start)
         self.assertEqual(
             chunker.embed_text(["Page"], self.TEXT[start:], header),
-            "Page\n\n| Objection | Response |\n| No time | Make time |",
+            "Page\n\n| Objection | Response |\n|---|---|\n| No time | Make time |",
+        )
+
+    def test_a_piece_starting_at_the_separator_gets_only_the_header(self):
+        start = self.TEXT.index("|----")
+        header = chunker.table_header(chunker.tables(self.TEXT), start)
+        self.assertEqual(
+            chunker.embed_text(["Page"], self.TEXT[start:], header),
+            "Page\n\n| Objection | Response |\n|---|---|\n| Too big | Split it |\n| No time | Make time |",
         )
 
     def test_a_piece_starting_at_the_header_gets_no_copy(self):

@@ -164,16 +164,22 @@ def only_links(text):
     return len(LINK.findall(text)) >= 2 and words(prose) < 10
 
 
+def cells(line):
+    """A table row's cells, without the empty ones its outer pipes make."""
+    parts = CELL.split(line.strip())
+    if parts and not parts[0].strip():
+        parts = parts[1:]
+    if parts and not parts[-1].strip():
+        parts = parts[:-1]
+    return parts
+
+
 def tidy_row(line):
     """A table row without its cell padding, or a separator row as |---|---|."""
-    cells = CELL.split(line.strip())
-    if cells and not cells[0].strip():
-        cells = cells[1:]
-    if cells and not cells[-1].strip():
-        cells = cells[:-1]
-    if cells and all(re.fullmatch(r"\s*:?-+:?\s*", cell) for cell in cells):
-        return "|" + "---|" * len(cells)
-    return "| " + " | ".join(cell.strip() for cell in cells) + " |"
+    row = cells(line)
+    if row and all(re.fullmatch(r"\s*:?-+:?\s*", cell) for cell in row):
+        return "|" + "---|" * len(row)
+    return "| " + " | ".join(cell.strip() for cell in row) + " |"
 
 
 def tidy_tables(text):
@@ -220,12 +226,15 @@ def embed_text(path, text, header=None):
     pages are left out: both are navigation, not content. Table rows lose their
     cell padding and separator rows shrink to |---|, which a tokeniser would
     otherwise count dash by dash. A piece that starts inside a table gets the
-    table's header row in front, so its rows keep their column names (our own
-    rules).
+    table's header row and a separator in front, so its rows keep their column
+    names and still read as a table (our own rules).
     """
     body = tidy_tables(LINK.sub(r"\1", REFERENCED_IN.sub("", text)))
     if header:
-        body = tidy_row(LINK.sub(r"\1", header)) + "\n" + body.lstrip("\n")
+        header, body = tidy_row(LINK.sub(r"\1", header)), body.lstrip("\n")
+        if not body.startswith("|---|"):  # a piece starting at the separator has its own
+            header += "\n|" + "---|" * len(cells(header))
+        body = header + "\n" + body
     return " > ".join(path) + "\n\n" + re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
