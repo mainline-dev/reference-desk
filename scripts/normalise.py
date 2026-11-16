@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
-"""Turn every source folder in corpus/raw/ into clean Markdown in corpus/docs/.
+#!/usr/bin/env -S uv run --quiet python
+"""Turn every source folder in corpus/raw/ into clean Markdown in corpus/docs/,
+and every page into one line of corpus/units.jsonl.
 
 Each directory in corpus/raw/ is a source, named after the directory. It can be
 a git clone or a plain folder of Markdown or text files. The script works out
@@ -9,31 +10,52 @@ what it can:
               config, if there is one)
   plain folder  nothing beyond the files themselves
 
-Every page gets provenance in its front matter, including a SHA-256 of the
-original file, so a plain folder is still traceable.
+Every page gets the same front matter, in this order, with empty fields left
+out and every other original field dropped:
+
+  id              <source>/<page path>, the same from run to run
+  title           the original title, else the first heading, else the file name
+  description     the original summary, description or headline, else the first
+                  paragraph, as plain text cut at about 300 characters
+  section         the first folder of the page's path, below a leading docs/
+  source, url, repo, commit, path
+  source_sha256   SHA-256 of the original file, so a plain folder is still traceable
+  licence, attribution
+
+units.jsonl holds one JSON object per page, sorted by id: the same fields, plus
+text (the cleaned body) and sha256 (of text).
 
 What it cannot work out is the licence: a repo's LICENSE file often covers its
 code, not its content. So every source needs an entry in sources.toml with a
 licence and an attribution. A directory without one is skipped, with a warning.
 
-Usage (from the repo root): python3 scripts/normalise.py
-Needs Python 3.11 or later (tomllib).
+Usage (from the repo root): ./scripts/normalise.py, which runs it with uv in the
+project environment (it needs PyYAML), or uv run scripts/normalise.py.
 """
 import fnmatch
 import hashlib
+import html
+import json
 import posixpath
 import re
 import shutil
 import subprocess
 import sys
 import tomllib
+from collections import Counter
 from pathlib import Path
+
+import yaml
 
 RAW = Path("corpus/raw")
 OUT = Path("corpus/docs")
+UNITS = Path("corpus/units.jsonl")
 CONFIG = Path("sources.toml")
 HUGO_CONFIGS = ["hugo.toml", "config.toml", "hugo/hugo.toml", "hugo/config.toml"]
 DEFAULT_INCLUDE = ["**/*.md", "**/*.txt"]
+DESCRIPTION_KEYS = ["summary", "description", "headline"]
+DESCRIPTION_LENGTH = 300
+REQUIRED = ["id", "title", "licence", "attribution"]
 
 FRONT = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
 RELREF = re.compile(r"\{\{[<%]\s*relref\s+\"([^\"]*)\"\s*[>%]\}\}")
@@ -42,6 +64,7 @@ RISK = re.compile(r"\{\{[<%]\s*risk-indicator\s+level=\"(\w+)\"\s*[>%]\}\}")
 SCOPE = re.compile(r"\{\{[<%]\s*scope-label\s+\"([\w-]+)\"\s*[>%]\}\}")
 CARD_HEADER = re.compile(r"\{\{[<%]\s*card\b[^}]*?header=\"([^\"]*)\"[^}]*[>%]\}\}")
 ANY_SHORTCODE = re.compile(r"\{\{[<%].*?[>%]\}\}", re.S)
+NOT_PROSE = re.compile(r"#{1,6}\s|[-*+]\s|\d+[.)]\s|[>|<]|!\[|\{\{|(?:[-*_]\s*){3,}$")
 
 
 # --- discovery -------------------------------------------------------------
@@ -106,9 +129,14 @@ def url_path(rel, trailing_slash=True):
     return path if trailing_slash else path.rstrip("/")
 
 
-def front_value(front, key):
-    match = re.search(rf"^{key}:\s*[\"']?(.*?)[\"']?\s*$", front, re.M)
-    return match.group(1) if match else ""
+def text_value(meta, key):
+    """A front matter value as text, or "" if it is missing or not a single value."""
+    value = meta.get(key)
+    if value is None or isinstance(value, (list, dict)):
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def first_heading(body):
@@ -116,7 +144,7 @@ def first_heading(body):
     return match.group(1) if match else ""
 
 
-def clean(body, front, page_path, base_url, trailing_slash=True):
+def clean(body, params, page_path, base_url, trailing_slash=True):
     if base_url:
         def relref(match):
             target, _, anchor = match.group(1).partition("#")
@@ -127,7 +155,7 @@ def clean(body, front, page_path, base_url, trailing_slash=True):
 
         body = RELREF.sub(relref, body)
         body = re.sub(r"\]\(/", f"]({base_url}/", body)  # site-relative links -> absolute
-    body = PARAM.sub(lambda m: front_value(front, m.group(1)), body)
+    body = PARAM.sub(lambda m: text_value(params, m.group(1)), body)
     body = RISK.sub(lambda m: f"Risk level: {m.group(1)}.", body)
     body = SCOPE.sub(lambda m: f"Scope: {m.group(1)}.", body)
     body = CARD_HEADER.sub(lambda m: m.group(1), body)
@@ -136,13 +164,85 @@ def clean(body, front, page_path, base_url, trailing_slash=True):
     return body.strip() + "\n"
 
 
-def quoted(value):
-    return '"' + str(value).replace('"', "'") + '"'
+# --- front matter ----------------------------------------------------------
+
+def plain(text):
+    """Markdown or HTML as plain text on one line."""
+    text = ANY_SHORTCODE.sub("", text)
+    text = re.sub(r"`+([^`]*)`+", r"\1", text)  # code
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)  # images
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # links
+    text = re.sub(r"\[([^\]]*)\]\[[^\]]*\]", r"\1", text)  # reference links
+    text = re.sub(r"<[^>]+>", "", text)  # HTML tags
+    text = re.sub(r"(\*\*|__)(.+?)\1", r"\2", text)  # bold
+    text = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", text)  # italics
+    text = re.sub(r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", r"\1", text)
+    text = re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", text)  # backslash escapes
+    return " ".join(html.unescape(text).split())
+
+
+def first_paragraph(markdown):
+    """The first paragraph of prose: not a heading, list, table, quote, code, HTML or image."""
+    lines, fence, skipping = [], None, False
+    for line in markdown.split("\n"):
+        stripped = line.strip()
+        if fence:
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        opening = re.match(r"`{3,}|~{3,}", stripped)
+        if opening:
+            if lines:
+                break
+            fence, skipping = opening.group(0), False
+        elif not stripped:
+            if lines:
+                break
+            skipping = False
+        elif lines and re.fullmatch(r"=+|-+", stripped):
+            lines, skipping = [], True  # an underline: the lines above were a heading
+        elif lines:
+            lines.append(stripped)
+        elif skipping or NOT_PROSE.match(stripped) or line.startswith(("    ", "\t")):
+            skipping = True  # the rest of this block is not prose either
+        else:
+            lines.append(stripped)
+    return " ".join(lines)
+
+
+def shorten(text, limit=DESCRIPTION_LENGTH):
+    """Text cut on a word boundary at about limit characters, marked … if a sentence is cut."""
+    if len(text) <= limit:
+        return text
+    head = text[: limit + 1]
+    cut = head.rsplit(" ", 1)[0] if " " in head else text[:limit]
+    return cut if cut[-1] in ".!?" else cut.rstrip(" ,;:-") + "…"
+
+
+def describe(meta, markdown):
+    for key in DESCRIPTION_KEYS:
+        text = plain(text_value(meta, key))
+        if text:
+            return shorten(text)
+    return shorten(plain(first_paragraph(markdown)))
+
+
+def section_of(rel):
+    """The first folder of a content-relative path, below a leading docs/ folder."""
+    folders = rel.split("/")[:-1]
+    if folders[:1] == ["docs"]:
+        folders = folders[1:]
+    return folders[0] if folders else ""
+
+
+def front_matter(fields):
+    return yaml.safe_dump(fields, sort_keys=False, allow_unicode=True, width=1_000_000)
 
 
 # --- main ------------------------------------------------------------------
 
 def normalise(folder, entry):
+    """Write a source's pages to corpus/docs. Returns (a summary line, its units)."""
     name = folder.name
     for key in ("licence", "attribution"):
         if not entry.get(key):
@@ -160,7 +260,7 @@ def normalise(folder, entry):
     exclude = entry.get("exclude", [])
     pages = sorted({p for pattern in include for p in root.glob(pattern) if p.is_file()})
 
-    written = 0
+    units = []
     for page in pages:
         rel = page.relative_to(root).as_posix()
         if any(fnmatch.fnmatch(rel, pattern) for pattern in exclude) or "/.git/" in f"/{rel}":
@@ -169,7 +269,12 @@ def normalise(folder, entry):
         text = raw.decode("utf-8", errors="replace")
         match = FRONT.match(text)
         front, body = (match.group(1), match.group(2)) if match else ("", text)
-        if re.search(r"^draft:\s*true", front, re.M):
+        try:
+            meta = yaml.safe_load(front) if front.strip() else {}
+        except yaml.YAMLError as error:
+            sys.exit(f"{page}: front matter is not valid YAML\n{error}")
+        meta = meta if isinstance(meta, dict) else {}
+        if meta.get("draft") is True:
             continue
 
         path = url_path(rel)  # with the slash: names the output file, resolves relrefs
@@ -181,29 +286,51 @@ def normalise(folder, entry):
         else:
             page_url = entry.get("url", "")  # plain folder: only if sources.toml gives one
 
-        if not front_value(front, "title"):
-            title = first_heading(body) or page.stem.replace("-", " ").replace("_", " ")
-            front = (front + "\n" if front else "") + f"title: {quoted(title)}"
+        title = text_value(meta, "title").strip()
+        title = title or first_heading(body) or page.stem.replace("-", " ").replace("_", " ")
+        markdown = clean(body, {**meta, "title": title}, path, base_url, trailing_slash)
+        unit_id = f"{name}/{path.strip('/') or 'index'}"
 
         fields = {
+            "id": unit_id,
+            "title": title,
+            "description": describe(meta, markdown),
+            "section": section_of(rel),
             "source": name,
-            "source_url": page_url,
-            "source_repo": repo,
-            "source_commit": commit,
-            "source_path": "/".join(x for x in (content_rel, rel) if x),
+            "url": page_url,
+            "repo": repo,
+            "commit": commit,
+            "path": "/".join(x for x in (content_rel, rel) if x),
             "source_sha256": hashlib.sha256(raw).hexdigest(),
             "licence": entry["licence"],
             "attribution": entry["attribution"],
         }
-        front = "\n".join([front] + [f"{k}: {quoted(v)}" for k, v in fields.items() if v])
+        fields = {key: value for key, value in fields.items() if value}
 
-        out = OUT / name / f"{path.strip('/') or 'index'}.md"
+        out = OUT / f"{unit_id}.md"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(f"---\n{front}\n---\n\n{clean(body, front, path, base_url, trailing_slash)}", encoding="utf-8")
-        written += 1
+        out.write_text(f"---\n{front_matter(fields)}---\n\n{markdown}", encoding="utf-8")
+        sha256 = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        units.append({**fields, "text": markdown, "sha256": sha256})
 
     version = f"at {commit[:12]}" if commit else "(plain folder)"
-    return f"{name}: {written} pages {version}"
+    return f"{name}: {len(units)} pages {version}", units
+
+
+def check(units):
+    """Stop if a page lacks a required field or shares its id with another."""
+    problems = []
+    for unit in units:
+        missing = [key for key in REQUIRED if not unit.get(key)]
+        if not unit.get("url") and not unit.get("path"):
+            missing.append("url or path")
+        if missing:
+            problems.append(f"{unit.get('id', '?')}: no {', '.join(missing)}")
+    for unit_id, count in sorted(Counter(unit.get("id") for unit in units).items()):
+        if count > 1:
+            problems.append(f"{unit_id}: id shared by {count} pages")
+    if problems:
+        sys.exit("check failed:\n  " + "\n  ".join(problems))
 
 
 def main():
@@ -211,16 +338,35 @@ def main():
     if OUT.exists():
         shutil.rmtree(OUT)
 
+    units = []
     folders = sorted(p for p in RAW.iterdir() if p.is_dir() and not p.name.startswith("."))
     for folder in folders:
         entry = config.get(folder.name)
         if entry is None:
             print(f"skip {folder.name}: no entry in {CONFIG} (add its licence and attribution)")
             continue
-        print(normalise(folder, entry))
+        summary, found = normalise(folder, entry)
+        print(summary)
+        units.extend(found)
 
     for name in sorted(set(config) - {p.name for p in folders}):
         print(f"note: {CONFIG} lists {name}, but corpus/raw/{name} is missing")
+
+    check(units)
+    units.sort(key=lambda unit: unit["id"])
+    with UNITS.open("w", encoding="utf-8") as out:
+        for unit in units:
+            out.write(json.dumps(unit, ensure_ascii=False) + "\n")
+    print(f"check: {len(units)} pages, ids unique, none missing id, title, url or path, licence or attribution")
+    print(f"{UNITS}: {len(units)} units")
+
+    samples = []
+    for unit in units:
+        if unit["source"] not in {sample["source"] for sample in samples}:
+            samples.append(unit)
+    for unit in samples[:3]:
+        fields = {key: value for key, value in unit.items() if key not in ("text", "sha256")}
+        print(f"\n---\n{front_matter(fields)}---")
 
 
 if __name__ == "__main__":

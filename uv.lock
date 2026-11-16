@@ -888,6 +888,7 @@ dependencies = [
     { name = "httpx" },
     { name = "numpy" },
     { name = "openai" },
+    { name = "pyyaml" },
     { name = "rank-bm25" },
     { name = "sentence-transformers" },
 ]
@@ -898,6 +899,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "numpy", specifier = ">=2.5.5" },
     { name = "openai", specifier = ">=3.51.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "sentence-transformers", specifier = ">=6.3.0" },
 ]
