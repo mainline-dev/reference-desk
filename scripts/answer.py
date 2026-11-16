@@ -62,12 +62,13 @@ def main():
     passages = [(chunks[i], units.get(chunks[i]["unit_id"], {}).get("title", chunks[i]["heading_path"][0]))
                 for i in top]
 
-    reply, provider = llm.chat(config, SYSTEM, prompt(question, passages))
+    reply, provider, reasoning = llm.chat(config, SYSTEM, prompt(question, passages))
     path = save({
         "question": question,
         "model": config["model"],
         "zdr": config["zdr"],
         "provider": provider,
+        "reasoning_tokens": reasoning,
         "chunks": [chunks[i]["id"] for i in top],
         "chunks_sha256": manifest["chunks_sha256"],
         "answer": reply,
@@ -78,7 +79,8 @@ def main():
     for n, (chunk, title) in enumerate(passages, 1):
         print(f"  [c{n}] {' > '.join(chunk['heading_path'])}")
     print(f"\nAnswer ({config['model']}, zdr {'on' if config['zdr'] else 'off'}"
-          f"{', served by ' + provider if provider else ''}):\n\n{reply}\n\nSaved {path}\n")
+          f"{', served by ' + provider if provider else ''}, reasoning tokens {reasoning}):"
+          f"\n\n{reply}\n\nSaved {path}\n")
     sys.exit(verify.verify(path))
 
 

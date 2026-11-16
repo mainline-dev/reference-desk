@@ -44,7 +44,8 @@ def settings():
 
 
 def chat(config, system, user):
-    """(the model's reply, the provider that served it if the API says) for one exchange.
+    """(the model's reply, the provider that served it, its reasoning tokens) for one
+    exchange. The provider and reasoning tokens are None where the API does not say.
 
     With zdr on, every request carries provider: {"zdr": true}. If the API turns
     it down, for instance because no zero retention provider serves the model,
@@ -68,4 +69,7 @@ def chat(config, system, user):
                      "without zero data retention. Choose a model with a ZDR provider in REFDESK_MODEL.")
         sys.exit(f"The model request failed ({error.status_code}): {detail}")
     provider = (response.model_extra or {}).get("provider")
-    return response.choices[0].message.content or "", provider
+    # The model is meant to answer without reasoning; this records whether it did.
+    details = getattr(response.usage, "completion_tokens_details", None)
+    reasoning = getattr(details, "reasoning_tokens", None)
+    return response.choices[0].message.content or "", provider, reasoning
