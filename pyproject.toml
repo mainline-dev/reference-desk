@@ -1,10 +1,10 @@
 [project]
 name = "reference-desk"
 version = "0.1.0"
-description = "Add your description here"
+description = "Answers questions about continuous delivery practice from DORA, MinimumCD, Beyond MinimumCD and the Twelve-Factor App, quoting its sources and checking every quote."
 readme = "README.md"
 authors = [
-    { name = "Nat Young", email = "nat.young7@gmail.com" }
+    { name = "Nat Young", email = "1880813+natyoung@users.noreply.github.com" }
 ]
 requires-python = ">=3.14"
 dependencies = [
@@ -19,9 +19,5 @@ dependencies = [
     "transformers>=5.23.0",
 ]
 
-[project.scripts]
-reference-desk = "reference_desk:main"
-
-[build-system]
-requires = ["uv_build>=0.13.8,<0.14.0"]
-build-backend = "uv_build"
+[tool.uv]
+package = false  # scripts, not an installable package
