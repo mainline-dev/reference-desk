@@ -57,6 +57,39 @@ def load():
     return chunks, vectors, manifest, model
 
 
+def load_units():
+    """{unit id: unit} for titles, URLs and licences, or {} if units.jsonl is missing."""
+    if not UNITS.exists():
+        return {}
+    return {u["id"]: u for u in map(json.loads, UNITS.read_text(encoding="utf-8").splitlines())}
+
+
+def rankings(question, chunks, vectors, manifest, model):
+    """Both lists for a question and their fusion.
+
+    Returns (cosine, bm25, by_embeddings, by_bm25, fused): the scores for every
+    chunk, each list as {chunk index: rank from 1}, and {chunk index: fused score}.
+    """
+    # ADR 0007: the query, not the passages, gets bge's instruction. Both are unit
+    # length, so the dot product is the cosine.
+    query = model.encode([manifest["query_instruction"] + question], normalize_embeddings=True,
+                         convert_to_numpy=True, show_progress_bar=False)[0]
+    cosine = vectors @ query
+    # BM25 over the same embed_text the vectors were made from, built at start-up.
+    bm25 = BM25Okapi([words(c["embed_text"]) for c in chunks]).get_scores(words(question))
+
+    by_embeddings = ranking(cosine, np.ones(len(chunks), bool))
+    by_bm25 = ranking(bm25, bm25 > 0)  # a chunk without any of the words is not in the list
+    fused = {i: sum(1 / (RRF_K + r[i]) for r in (by_embeddings, by_bm25) if i in r)
+             for i in set(by_embeddings) | set(by_bm25)}
+    return cosine, bm25, by_embeddings, by_bm25, fused
+
+
+def fused_order(fused):
+    """Chunk indices, best fused score first, the top TOP of them."""
+    return sorted(fused, key=lambda i: (-fused[i], i))[:TOP]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Search the reference desk.")
     parser.add_argument("question")
@@ -66,30 +99,15 @@ def main():
     args = parser.parse_args()
 
     chunks, vectors, manifest, model = load()
-    units = {}
-    if UNITS.exists():
-        units = {u["id"]: u for u in map(json.loads, UNITS.read_text(encoding="utf-8").splitlines())}
-
-    # ADR 0007: the query, not the passages, gets bge's instruction. Both are unit
-    # length, so the dot product is the cosine.
-    query = model.encode([manifest["query_instruction"] + args.question], normalize_embeddings=True,
-                         convert_to_numpy=True, show_progress_bar=False)[0]
-    cosine = vectors @ query
-    # BM25 over the same embed_text the vectors were made from, built at start-up.
-    bm25 = BM25Okapi([words(c["embed_text"]) for c in chunks]).get_scores(words(args.question))
-
-    by_embeddings = ranking(cosine, np.ones(len(chunks), bool))
-    by_bm25 = ranking(bm25, bm25 > 0)  # a chunk without any of the words is not in the list
-    fused = {i: sum(1 / (RRF_K + r[i]) for r in (by_embeddings, by_bm25) if i in r)
-             for i in set(by_embeddings) | set(by_bm25)}
+    units = load_units()
+    cosine, bm25, by_embeddings, by_bm25, fused = rankings(args.question, chunks, vectors, manifest, model)
 
     if args.embeddings_only:
         mode, order, score = "embeddings only (cosine)", sorted(by_embeddings, key=by_embeddings.get), cosine
     elif args.bm25_only:
         mode, order, score = "BM25 only (BM25 score)", sorted(by_bm25, key=by_bm25.get), bm25
     else:
-        mode, order = f"fused (reciprocal rank fusion, k={RRF_K})", sorted(fused, key=lambda i: (-fused[i], i))
-        score = fused
+        mode, order, score = f"fused (reciprocal rank fusion, k={RRF_K})", fused_order(fused), fused
     print(f'"{args.question}": {mode}, top {TOP} of {len(chunks)} chunks, {len(by_bm25)} with a BM25 match\n')
 
     for rank, i in enumerate(order[:TOP], 1):
