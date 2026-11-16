@@ -34,6 +34,8 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 SENTENCE_END = re.compile(r"(?<=[.!?])[\"')\]]*\s+(?=[A-Z0-9\"'(\[*_`])")
 LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 REFERENCED_IN = re.compile(r"(?m)^[ \t]*Referenced in:[^\n]*(?:\n(?![ \t]*(?:\n|$))[^\n]*)*")
+TABLE_ROW = re.compile(r"^[ \t]*\|")
+CELL = re.compile(r"(?<!\\)\|")
 
 
 def words(text):
@@ -162,13 +164,68 @@ def only_links(text):
     return len(LINK.findall(text)) >= 2 and words(prose) < 10
 
 
-def embed_text(path, text):
+def tidy_row(line):
+    """A table row without its cell padding, or a separator row as |---|---|."""
+    cells = CELL.split(line.strip())
+    if cells and not cells[0].strip():
+        cells = cells[1:]
+    if cells and not cells[-1].strip():
+        cells = cells[:-1]
+    if cells and all(re.fullmatch(r"\s*:?-+:?\s*", cell) for cell in cells):
+        return "|" + "---|" * len(cells)
+    return "| " + " | ".join(cell.strip() for cell in cells) + " |"
+
+
+def tidy_tables(text):
+    """Every table row outside code tidied by tidy_row."""
+    lines, fence = [], None
+    for line in text.split("\n"):
+        was_open = fence is not None
+        fence = fence_after(line, fence)
+        lines.append(tidy_row(line) if not was_open and fence is None and TABLE_ROW.match(line) else line)
+    return "\n".join(lines)
+
+
+def tables(text):
+    """(start, end, header row) for each table outside code: start and end span
+    its separator row and the rows after it, the part a cut can leave headless."""
+    rows, fence = [], None
+    for pos, line in lines_with_offsets(text):
+        was_open = fence is not None
+        fence = fence_after(line, fence)
+        rows.append((pos, line, not was_open and fence is None and bool(TABLE_ROW.match(line))))
+    found, i = [], 1
+    while i < len(rows):
+        pos, line, is_row = rows[i]
+        if is_row and rows[i - 1][2] and re.fullmatch(r"[\s|:]*-[\s|:-]*", line):
+            j = i
+            while j + 1 < len(rows) and rows[j + 1][2]:
+                j += 1
+            found.append((pos, rows[j][0] + len(rows[j][1]), rows[i - 1][1].rstrip("\n")))
+            i = j + 1
+        else:
+            i += 1
+    return found
+
+
+def table_header(tables, start):
+    """The header row of the table a piece starting at `start` begins inside, if any."""
+    return next((header for s, e, header in tables if s <= start < e), None)
+
+
+def embed_text(path, text, header=None):
     """ADR 0006: the heading path goes in front of what is embedded and indexed.
 
     Links keep their words and lose their URLs, and "Referenced in:" lists of
-    pages are left out: both are navigation, not content (our own rule).
+    pages are left out: both are navigation, not content. Table rows lose their
+    cell padding and separator rows shrink to |---|, which a tokeniser would
+    otherwise count dash by dash. A piece that starts inside a table gets the
+    table's header row in front, so its rows keep their column names (our own
+    rules).
     """
-    body = LINK.sub(r"\1", REFERENCED_IN.sub("", text))
+    body = tidy_tables(LINK.sub(r"\1", REFERENCED_IN.sub("", text)))
+    if header:
+        body = tidy_row(LINK.sub(r"\1", header)) + "\n" + body.lstrip("\n")
     return " > ".join(path) + "\n\n" + re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
@@ -188,10 +245,11 @@ def atoms(text, span, fits, marks=(r"\n", r"[ \t]+")):
     return [atom for piece in pieces for atom in atoms(text, piece, fits, marks[1:])]
 
 
-def fit(text, path, start, end, count):
+def fit(text, path, start, end, count, heads):
     """ADR 0007: cut a chunk whose embed_text is over MAX_TOKENS into pieces of
-    about equal size that fit, at sentence ends, else line breaks, else spaces."""
-    tokens = lambda s, e: count(embed_text(path, text[s:e]))
+    about equal size that fit, at sentence ends, else line breaks, else spaces.
+    A piece is measured with any table header its embed_text will repeat."""
+    tokens = lambda s, e: count(embed_text(path, text[s:e], table_header(heads, s)))
     fits = lambda s, e: tokens(s, e) <= MAX_TOKENS
     spans = [a for b in blocks(text, start, end) for s in sentences(text, *b) for a in atoms(text, s, fits)]
     total = tokens(start, end)
@@ -240,13 +298,13 @@ def chunk_unit(unit, count):
             packed[a:b + 1] = [(packed[a][0], packed[b][1])]
         merged += [(path, s, e) for s, e in packed]
 
-    chunks, cut = [], 0
+    chunks, cut, heads = [], 0, tables(text)
     for path, start, end in merged:
         if path[-1].lower() in SKIP_SECTIONS:
             continue
         pieces = [(start, end)]
-        if count(embed_text(path, text[start:end])) > MAX_TOKENS:
-            pieces = fit(text, path, start, end, count)
+        if count(embed_text(path, text[start:end], table_header(heads, start))) > MAX_TOKENS:
+            pieces = fit(text, path, start, end, count, heads)
             cut += 1
         for s, e in pieces:
             body = text[s:e]
@@ -260,7 +318,7 @@ def chunk_unit(unit, count):
                 "end": e,
                 "heading_path": path,
                 "text": body,
-                "embed_text": embed_text(path, body),
+                "embed_text": embed_text(path, body, table_header(heads, s)),
             })
     return chunks, cut
 
