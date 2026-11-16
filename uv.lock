@@ -891,6 +891,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rank-bm25" },
     { name = "sentence-transformers" },
+    { name = "transformers" },
 ]
 
 [package.metadata]
@@ -902,6 +903,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "sentence-transformers", specifier = ">=6.3.0" },
+    { name = "transformers", specifier = ">=5.23.0" },
 ]
 
 [[package]]
