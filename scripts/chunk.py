@@ -23,7 +23,7 @@ CHUNKS = Path("corpus/chunks.jsonl")
 
 MAX_WORDS = 300          # ADR 0004: 200 to 400 tokens. A target only: MAX_TOKENS is the hard limit (ADR 0007)
 MIN_WORDS = 40           # ADR 0004: smaller chunks join the next one (our own rule)
-OVERLAP_SENTENCES = 0    # ADR 0005: 0 or 2, decided by the eval
+OVERLAP_SENTENCES = 0    # ADR 0005: no overlap, decided by the eval on 2026-11-17
 MIN_KEEP = 8             # drop chunks shorter than this: stray labels, empty sections (our own rule)
 SKIP_SECTIONS = {"related content", "see also"}  # navigation, not content (our own rule)
 TOKENISER = "BAAI/bge-small-en-v1.5"  # ADR 0007: the embedding model, measured with its own tokeniser

@@ -1,6 +1,6 @@
-# No chunk overlap until the eval decides
+# No chunk overlap
 
-Status: Proposed
+Status: Accepted (2026-11-17)
 
 ## Context and Problem Statement
 
@@ -19,8 +19,8 @@ between 0 and 2 sentences.
 
 ## Decision Outcome
 
-Proposed: no overlap, until the retrieval eval compares 0 with 2
-sentences on this corpus. The evidence is mixed.
+No overlap. The published evidence is mixed, so the retrieval eval
+compared 0 with 2 sentences on this corpus.
 
 - With text-embedding-3-large and 400-token chunks, removing a
   200-token overlap raised recall (88.1 to 89.5 with
@@ -36,15 +36,39 @@ sentences on this corpus. The evidence is mixed.
   report of overlapping ones: "which we do not find advantageous
   compared to the non-overlapping version".
 
-Overlap is counted in whole sentences, not tokens, so the verifier
-can still quote whole sentences (ADR 0002).
+Overlap was counted in whole sentences, not tokens, so the verifier
+could still quote whole sentences (ADR 0002).
+
+On 2026-11-17, eval.py scored both on the 25 dev questions that have
+pages to find (the overlap2 variant in experiments.py), against the
+default fused search with at most 2 passages per page. Overlap only
+changes sections longer than MAX_WORDS, so it added 60 chunks: 3,707
+against 3,647.
+
+| | No overlap | 2 sentences |
+|---|---|---|
+| Fused recall@8 | 0.564 | 0.572 |
+| Fused recall@20 | 0.683 | 0.678 |
+| Fused MRR | 0.622 | 0.618 |
+| Fused nDCG@10 | 0.589 | 0.582 |
+| Questions fixed / broken | | 0 / 0 |
+| Questions better / worse by MRR | | 1 / 2 |
+
+The whole recall@8 gain is one question (q39), where one more answer
+page reached the top 8 (0.60 to 0.80). Every other measure fell
+slightly, and q35 and q36 ranked their first answer page lower.
+Against the earlier default without the per-page cap the picture was
+the same: recall@8 0.533 to 0.537, nothing fixed or broken. A gain of
+one page on one question does not pay for indexing sentences twice
+and repeating them across the eight passages.
 
 ### Consequences
 
-With no overlap each sentence is in exactly one chunk, and the eight
-passages hold no repeats. A fact split across a boundary may be found
-in neither half. The eval decides between 0 and 2, and this ADR is
-then accepted or replaced.
+Each sentence is in exactly one chunk, and the eight passages hold no
+repeats. A fact split across a boundary may be found in neither half.
+OVERLAP_SENTENCES
+stays 0 in chunk.py, and the overlap2 variant stays in experiments.py
+to test again if the chunk sizes or the embedding model change.
 
 ## References
 
