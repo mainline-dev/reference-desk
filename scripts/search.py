@@ -24,6 +24,8 @@ import embed  # scripts/embed.py: the model, how it is loaded, and where the vec
 UNITS = Path("corpus/units.jsonl")
 RRF_K = 60   # ADR 0008: reciprocal rank fusion constant
 TOP = 20     # ADR 0008: results kept after fusion
+PER_PAGE = 2  # our own rule: at most 2 passages from one page in the fused list, chosen by eval.py on
+              # 2026-11-17 (fused recall@8 on dev 0.533 to 0.564, no question worse)
 WORD = re.compile(r"\w+")
 
 
@@ -85,9 +87,19 @@ def rankings(question, chunks, vectors, manifest, model):
     return cosine, bm25, by_embeddings, by_bm25, fused
 
 
-def fused_order(fused):
-    """Chunk indices, best fused score first, the top TOP of them."""
-    return sorted(fused, key=lambda i: (-fused[i], i))[:TOP]
+def fused_order(fused, chunks, top=TOP):
+    """Chunk indices, best fused score first, with at most PER_PAGE from any one page:
+    the first `top` of them, or all of them when top is None.
+
+    A page's third and later passages are left out rather than moved down, so the
+    eight passages in a prompt come from at least four pages."""
+    order, per_page = [], {}
+    for i in sorted(fused, key=lambda i: (-fused[i], i)):
+        unit = chunks[i]["unit_id"]
+        if per_page.get(unit, 0) < PER_PAGE:
+            per_page[unit] = per_page.get(unit, 0) + 1
+            order.append(i)
+    return order if top is None else order[:top]
 
 
 def main():
@@ -107,7 +119,8 @@ def main():
     elif args.bm25_only:
         mode, order, score = "BM25 only (BM25 score)", sorted(by_bm25, key=by_bm25.get), bm25
     else:
-        mode, order, score = f"fused (reciprocal rank fusion, k={RRF_K})", fused_order(fused), fused
+        mode, order, score = (f"fused (reciprocal rank fusion, k={RRF_K}, at most {PER_PAGE} per page)",
+                              fused_order(fused, chunks), fused)
     print(f'"{args.question}": {mode}, top {TOP} of {len(chunks)} chunks, {len(by_bm25)} with a BM25 match\n')
 
     for rank, i in enumerate(order[:TOP], 1):

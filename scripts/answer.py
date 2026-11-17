@@ -89,7 +89,7 @@ def main():
     chunks, vectors, manifest, model = search.load()
     units = search.load_units()
     *_, fused = search.rankings(question, chunks, vectors, manifest, model)
-    top = search.fused_order(fused)[:PASSAGES]
+    top = search.fused_order(fused, chunks)[:PASSAGES]
     passages = [(chunks[i], units.get(chunks[i]["unit_id"], {}).get("title", chunks[i]["heading_path"][0]))
                 for i in top]
 
