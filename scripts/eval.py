@@ -26,7 +26,8 @@ Every run is saved to corpus/evals/<timestamp>.json with the git commit.
 --compare compares a run with a saved one question by question. A question is
 fixed when no grade-2 page was in the fused top 8 before and one is now, and
 broken the other way round; better or worse by the rank of its first grade-2
-page. A change wins if it fixes at least 3 questions and breaks at most 1.
+page. A change wins if it fixes at least 3 questions and breaks at most 1, or if
+it breaks none and raises the fused recall@8 averaged over the dev questions.
 
 Usage (from the repo root):
   ./scripts/eval.py [--show-holdout]
@@ -48,7 +49,8 @@ GAIN = {2: 3, 1: 1}  # 2^grade - 1
 MODES = ["bm25", "embeddings", "fused"]
 METRICS = ["recall@8", "recall@20", "MRR", "nDCG@10"]
 PROMPT_PASSAGES = 8
-WIN_FIXED, WIN_BROKEN = 3, 1  # a change wins if it fixes at least 3 questions and breaks at most 1
+WIN_FIXED, WIN_BROKEN = 3, 1  # a change wins if it fixes at least 3 questions and breaks at most 1,
+                              # or breaks none and raises the fused recall@8
 
 
 def page_order(chunk_order, chunks):
@@ -85,7 +87,7 @@ def orders_for(question, chunks, vectors, manifest, model):
     return {
         "bm25": sorted(by_bm25, key=by_bm25.get),
         "embeddings": sorted(by_embeddings, key=by_embeddings.get),
-        "fused": sorted(fused, key=lambda i: (-fused[i], i)),
+        "fused": search.fused_order(fused, chunks, top=None),  # the whole list, at most PER_PAGE per page
     }
 
 
@@ -97,10 +99,13 @@ def compare(rows, base_rows):
     """Question-by-question change in the fused search from a saved run's rows to these."""
     base = {r["id"]: r for r in base_rows}
     result = {"fixed": [], "broken": [], "better": [], "worse": [], "same": 0}
+    recall = [[], []]  # fused recall@8 before and after, over the questions in both runs
     for r in rows:
         if r["id"] not in base:
             continue
         before, now = base[r["id"]]["scores"]["fused"], r["scores"]["fused"]
+        recall[0].append(before["recall@8"])
+        recall[1].append(now["recall@8"])
         if before["recall@8"] == 0 < now["recall@8"]:
             result["fixed"].append(r["id"])
         elif now["recall@8"] == 0 < before["recall@8"]:
@@ -112,8 +117,31 @@ def compare(rows, base_rows):
             result["worse"].append(change)
         else:
             result["same"] += 1
-    result["wins"] = len(result["fixed"]) >= WIN_FIXED and len(result["broken"]) <= WIN_BROKEN
+    result["recall@8"] = [sum(r) / len(r) if r else 0.0 for r in recall]
+    fixes = len(result["fixed"]) >= WIN_FIXED and len(result["broken"]) <= WIN_BROKEN
+    raises = not result["broken"] and result["recall@8"][1] > result["recall@8"][0] + 1e-9
+    result["wins"] = fixes or raises
+    result["why"] = ("fixes enough and breaks few enough" if fixes else
+                     "breaks none and raises fused recall@8" if raises else "neither")
     return result
+
+
+def drift(rows, base_rows, feedback, grades):
+    """Query drift: each question whose feedback passages ({question: [unit ids]}) came from
+    no grade-2 page, with those pages' grades and whether feedback made it worse (fused MRR
+    or recall@8 down from the saved run)."""
+    base = {r["id"]: r for r in base_rows}
+    found = []
+    for r in rows:
+        pages = feedback.get(r["question"])
+        if r["id"] not in base or pages is None or any(grades[r["id"]].get(u) == 2 for u in pages):
+            continue
+        before, now = base[r["id"]]["scores"]["fused"], r["scores"]["fused"]
+        worse = now["MRR"] < before["MRR"] - 1e-9 or now["recall@8"] < before["recall@8"] - 1e-9
+        found.append({"id": r["id"], "type": r["type"], "pages": [[u, grades[r["id"]].get(u)] for u in pages],
+                      "MRR": [before["MRR"], now["MRR"]], "recall@8": [before["recall@8"], now["recall@8"]],
+                      "worse": worse})
+    return found
 
 
 def git(*args):
@@ -149,9 +177,9 @@ def main():
         variant = experiments.Variant(args.variant, chunks, vectors, manifest, model)
         splits = ("dev",)  # a variant never touches the holdout
 
-    rows = []
+    rows, grades_by_id = [], {}
     for q in questions:
-        grades = {e["unit_id"]: e["grade"] for e in q["expected"] if "unit_id" in e}
+        grades = grades_by_id[q["id"]] = {e["unit_id"]: e["grade"] for e in q["expected"] if "unit_id" in e}
         if q["split"] not in splits or 2 not in grades.values():
             continue  # another split, or nothing to retrieve yet (scored by the answer eval)
         if variant:
@@ -220,6 +248,11 @@ def main():
         print(f"\nreranking the fused top {experiments.RERANK_DEPTH} on {model.device}: median {median * 1000:.0f} ms "
               f"per query, mean {run['rerank_seconds']['mean'] * 1000:.0f} ms, first query {each[0] * 1000:.0f} ms "
               f"({experiments.RERANKER} at {variant.reranker_revision[:12]})")
+    if variant and variant.notes:
+        run["notes"] = variant.notes
+        for key in ("expansions", "context_tokens"):
+            if key in variant.notes:
+                print(f"\n{key}: {variant.notes[key]}")
     if variant and getattr(variant, "generated", None):
         run["generated"] = variant.generated
         run["llm_prompt"] = experiments.REWRITE if args.variant == "rewrite" else experiments.HYDE
@@ -242,8 +275,24 @@ def main():
             if t in base_types:
                 b, a = base_types[t]["fused"], rs["fused"]
                 print(f"    {t:22} recall@8 {b['recall@8']:.3f} -> {a['recall@8']:.3f}   MRR {b['MRR']:.3f} -> {a['MRR']:.3f}")
-        print(f"  verdict: {'wins' if result['wins'] else 'does not win'} (fixes {len(result['fixed'])}, breaks "
-              f"{len(result['broken'])}; needs at least {WIN_FIXED} fixed and at most {WIN_BROKEN} broken)")
+        before, after = result["recall@8"]
+        print(f"  fused recall@8: {before:.3f} -> {after:.3f}")
+        if variant and "feedback" in variant.notes:
+            drifted = drift([r for r in rows if r["split"] == "dev"], base["questions"],
+                            variant.notes["feedback"], grades_by_id)
+            run["drift"] = drifted
+            worse = [d for d in drifted if d["worse"]]
+            print(f"  query drift: {len(drifted)} questions had no grade-2 page among their {len(drifted[0]['pages']) if drifted else 3} "
+                  f"feedback pages; feedback made {len(worse)} of them worse")
+            for d in drifted:
+                pages = ", ".join(f"{titles.get(u, u)} ({g or '-'})" for u, g in d["pages"])
+                print(f"    {d['id']} {d['type']}{' WORSE' if d['worse'] else ''}: MRR {d['MRR'][0]:.2f} -> {d['MRR'][1]:.2f}, "
+                      f"recall@8 {d['recall@8'][0]:.2f} -> {d['recall@8'][1]:.2f}; fed back {pages}")
+            others = [i for i, _, _ in result["worse"] if i not in {d["id"] for d in drifted}]
+            print(f"  worse by MRR although a grade-2 page was fed back: {', '.join(others) or 'none'}")
+        print(f"  verdict: {'wins' if result['wins'] else 'does not win'}: {result['why']} (fixes "
+              f"{len(result['fixed'])}, breaks {len(result['broken'])}; wins with at least {WIN_FIXED} fixed and at "
+              f"most {WIN_BROKEN} broken, or none broken and recall@8 up)")
 
     RUNS.mkdir(parents=True, exist_ok=True)
     path = RUNS / f"{stamp.strftime('%Y%m%dT%H%M%SZ')}-{run['variant']}.json"
