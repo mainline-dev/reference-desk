@@ -16,7 +16,7 @@ Each script runs from the repo root, in this order:
 1. `scripts/normalise.py` cleans each source in `corpus/raw/` into Markdown with one front matter schema, and writes `corpus/units.jsonl` and `SOURCES.md`.
 2. `scripts/chunk.py` cuts each page into chunks at headings and sentence ends, each within 480 tokens, and writes `corpus/chunks.jsonl`.
 3. `scripts/embed.py` embeds the chunks with bge-small-en-v1.5 and writes `corpus/chunks.npy` and `corpus/manifest.json`.
-4. `scripts/search.py "question"` searches with BM25 and embeddings, merged by reciprocal rank fusion.
+4. `scripts/search.py "question"` searches with BM25 and embeddings, merged by reciprocal rank fusion, with at most 2 passages from any one page.
 5. `scripts/answer.py "question"` answers from the top 8 passages in exact quotes, using the model set in `.env`.
 6. `scripts/verify.py` checks every quote in a saved answer against its passage.
 7. `scripts/eval.py` scores retrieval against the questions in `eval.jsonl`.
@@ -51,6 +51,19 @@ This scores BM25, embeddings and the fused search on the dev questions, overall
 and by question type, and saves the run to `corpus/evals/`. The holdout
 questions are scored too, but listed one by one only with `--show-holdout`:
 tune on dev and look at the holdout last.
+
+To try a change to retrieval without changing the defaults, score a variant from
+`scripts/experiments.py` on the dev questions and compare it, question by question,
+with a saved run:
+
+```sh
+./scripts/eval.py --variant NAME --compare corpus/evals/<run>.json
+```
+
+A change wins if it fixes at least 3 questions and breaks at most 1, or breaks none
+and raises the fused recall@8. `scripts/expand.py` writes questions and context for
+each chunk with a local model under Ollama, for the expansion variants. That text is
+only matched against: it is never shown, quoted or cited.
 
 The tests need neither the corpus nor the network:
 
